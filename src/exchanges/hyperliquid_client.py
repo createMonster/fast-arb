@@ -48,25 +48,27 @@ class HyperliquidClient(BaseExchange):
     def _init_exchange(self) -> None:
         """Initialize CCXT exchange instance"""
         try:
-            # Note: Hyperliquid might not be directly supported by CCXT
-            # This is a placeholder implementation
-            # In practice, you might need to use Hyperliquid's native API
-            
-            self.exchange = ccxt.hyperliquid({
-                'apiKey': '',  # Hyperliquid uses different auth
-                'secret': '',
-                'password': '',
-                'sandbox': False,
-                'enableRateLimit': True,
-                'options': {
-                    'defaultType': 'swap',  # For perpetual futures
-                }
-            })
-            
-            # Set private key if provided
-            if self.private_key:
-                # Hyperliquid uses wallet-based authentication
-                self.exchange.apiKey = self.private_key
+            # Check if Hyperliquid is supported by CCXT
+            if hasattr(ccxt, 'hyperliquid'):
+                self.exchange = ccxt.hyperliquid({
+                    'apiKey': '',  # Hyperliquid uses different auth
+                    'secret': '',
+                    'password': '',
+                    'sandbox': False,
+                    'enableRateLimit': True,
+                    'options': {
+                        'defaultType': 'swap',  # For perpetual futures
+                    }
+                })
+                
+                # Set private key if provided
+                if self.private_key:
+                    # Hyperliquid uses wallet-based authentication
+                    self.exchange.apiKey = self.private_key
+            else:
+                # Hyperliquid not supported by CCXT
+                logger.info("Hyperliquid not supported by CCXT, using custom implementation")
+                self.exchange = None
                 
         except Exception as e:
             logger.warning(f"CCXT Hyperliquid not available, using custom implementation: {e}")

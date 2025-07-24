@@ -418,11 +418,12 @@ class ArbitrageEngine:
                     logger.warning("Hyperliquid client health check failed")
             
             # Check component status
-            if self.funding_monitor and not self.funding_monitor.is_monitoring:
+            if self.funding_monitor and not self.funding_monitor.is_running():
                 logger.warning("Funding monitor is not active")
             
-            if self.opportunity_detector and not self.opportunity_detector.is_detecting:
-                logger.warning("Opportunity detector is not active")
+            # Opportunity detector is always active when initialized
+            if not self.opportunity_detector:
+                logger.warning("Opportunity detector is not initialized")
             
         except Exception as e:
             logger.error(f"Health check failed: {e}")

@@ -1,13 +1,21 @@
-"""Reya Network exchange client"""
+"""Reya Network exchange client using official SDK"""
 
-import json
 import asyncio
-import websockets
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
-from web3 import Web3
-from eth_account import Account
 from loguru import logger
+
+# Import from official Reya SDK
+try:
+    from reya_data_feed.consumer import ReyaSocket
+    from reya_actions.actions.trade import trade, TradeParams
+    from reya_actions.actions.create_account import create_account
+    from reya_actions.config import get_config
+    from reya_actions.types import MarketIds
+except ImportError as e:
+    logger.error(f"Failed to import Reya SDK: {e}")
+    logger.error("Please install the Reya SDK dependencies")
+    raise
 
 from .base_exchange import (
     BaseExchange, MarketData, Position, Order, Balance,
@@ -17,130 +25,75 @@ from ..utils.helpers import safe_float, get_current_timestamp
 
 
 class ReyaClient(BaseExchange):
-    """Reya Network exchange client
+    """Reya Network exchange client using official SDK
     
-    Based on the Reya Python SDK examples:
+    Integrates with the official Reya Python SDK:
     https://github.com/Reya-Labs/reya-python-sdk
     """
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__("Reya", config)
         
+        # Configuration from official SDK requirements
         self.websocket_url = config.get('websocket_url', 'wss://ws.reya.network')
         self.rpc_url = config.get('rpc_url', 'https://rpc.reya.network')
         self.chain_id = config.get('chain_id', 1729)
         self.private_key = config.get('private_key', '')
         self.account_id = config.get('account_id', '')
         
-        # Initialize Web3 connection
-        self.w3 = Web3(Web3.HTTPProvider(self.rpc_url))
+        # Validate required configuration
+        if not self.private_key:
+            logger.warning("No private key provided for Reya client")
+        if not self.account_id:
+            logger.warning("No account ID provided for Reya client")
         
-        # Initialize account if private key is provided and valid
-        self.account = None
-        if self.private_key and self._is_valid_private_key(self.private_key):
-            try:
-                self.account = Account.from_key(self.private_key)
-            except Exception as e:
-                logger.warning(f"Invalid private key provided: {e}")
-                self.account = None
-        
-        # WebSocket connection
-        self.ws = None
-        self.subscriptions = set()
+        # Initialize SDK components
+        self.ws_consumer: Optional[ReyaSocket] = None
+        self.sdk_config: Optional[dict] = None
         self.market_data_cache = {}
+        self.subscriptions = set()
         
         # Market data update handlers
         self._funding_rate_handlers = []
         self._price_handlers = []
     
-    def _is_valid_private_key(self, private_key: str) -> bool:
-        """Check if private key is valid hexadecimal"""
-        if not private_key or private_key in ['your_reya_private_key_here', 'test_key', '']:
-            return False
-        
-        try:
-            # Remove 0x prefix if present
-            key = private_key.replace('0x', '')
-            # Check if it's valid hex and correct length (64 characters)
-            int(key, 16)
-            return len(key) == 64
-        except ValueError:
-            return False
-        
     async def connect(self) -> bool:
-        """Connect to Reya Network"""
+        """Connect to Reya Network using official SDK"""
         try:
-            # Test RPC connection
-            if not self.w3.is_connected():
-                logger.error("Failed to connect to Reya RPC")
-                return False
+            # Get SDK configuration
+            self.sdk_config = get_config()
+            
+            # Initialize WebSocket consumer from SDK
+            self.ws_consumer = ReyaSocket()
             
             # Connect to WebSocket
-            await self._connect_websocket()
+            await self.ws_consumer.connect()
+            
+            # Setup message handlers
+            self.ws_consumer.on_funding_rate_update = self._handle_funding_rate_update
+            self.ws_consumer.on_price_update = self._handle_price_update
+            self.ws_consumer.on_candle_update = self._handle_candle_update
             
             self._connected = True
-            logger.info(f"Connected to Reya Network (Chain ID: {self.chain_id})")
+            logger.info(f"Connected to Reya Network using official SDK (Chain ID: {self.chain_id})")
             return True
             
         except Exception as e:
-            logger.error(f"Failed to connect to Reya: {e}")
+            logger.error(f"Failed to connect to Reya using SDK: {e}")
             return False
     
     async def disconnect(self) -> None:
         """Disconnect from Reya Network"""
-        if self.ws:
-            await self.ws.close()
-            self.ws = None
+        if self.ws_consumer:
+            await self.ws_consumer.disconnect()
+            self.ws_consumer = None
         
         self.subscriptions.clear()
         self._connected = False
         logger.info("Disconnected from Reya Network")
     
-    async def _connect_websocket(self) -> None:
-        """Connect to Reya WebSocket"""
-        try:
-            self.ws = await websockets.connect(self.websocket_url)
-            logger.info(f"Connected to Reya WebSocket: {self.websocket_url}")
-            
-            # Start message handler
-            asyncio.create_task(self._handle_websocket_messages())
-            
-        except Exception as e:
-            logger.error(f"Failed to connect to Reya WebSocket: {e}")
-            raise
-    
-    async def _handle_websocket_messages(self) -> None:
-        """Handle incoming WebSocket messages"""
-        try:
-            async for message in self.ws:
-                try:
-                    data = json.loads(message)
-                    await self._process_websocket_message(data)
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse WebSocket message: {e}")
-                except Exception as e:
-                    logger.error(f"Error processing WebSocket message: {e}")
-                    
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("Reya WebSocket connection closed")
-        except Exception as e:
-            logger.error(f"WebSocket handler error: {e}")
-    
-    async def _process_websocket_message(self, data: Dict[str, Any]) -> None:
-        """Process WebSocket message"""
-        message_type = data.get('type')
-        
-        if message_type == 'funding_rate':
-            await self._handle_funding_rate_update(data)
-        elif message_type == 'price':
-            await self._handle_price_update(data)
-        elif message_type == 'candle':
-            await self._handle_candle_update(data)
-        else:
-            logger.debug(f"Unhandled message type: {message_type}")
-    
     async def _handle_funding_rate_update(self, data: Dict[str, Any]) -> None:
-        """Handle funding rate update"""
+        """Handle funding rate update from SDK <mcreference link="https://github.com/Reya-Labs/reya-python-sdk" index="1">1</mcreference>"""
         symbol = data.get('symbol')
         funding_rate = safe_float(data.get('funding_rate'))
         
@@ -153,9 +106,16 @@ class ReyaClient(BaseExchange):
             self.market_data_cache[symbol]['funding_rate_timestamp'] = get_current_timestamp()
             
             logger.debug(f"Funding rate update: {symbol} = {funding_rate}")
+            
+            # Notify handlers
+            for handler in self._funding_rate_handlers:
+                try:
+                    await handler(symbol, funding_rate)
+                except Exception as e:
+                    logger.error(f"Error in funding rate handler: {e}")
     
     async def _handle_price_update(self, data: Dict[str, Any]) -> None:
-        """Handle price update"""
+        """Handle price update from SDK <mcreference link="https://github.com/Reya-Labs/reya-python-sdk" index="1">1</mcreference>"""
         symbol = data.get('symbol')
         price = safe_float(data.get('price'))
         
@@ -168,9 +128,16 @@ class ReyaClient(BaseExchange):
             self.market_data_cache[symbol]['price_timestamp'] = get_current_timestamp()
             
             logger.debug(f"Price update: {symbol} = {price}")
+            
+            # Notify handlers
+            for handler in self._price_handlers:
+                try:
+                    await handler(symbol, price)
+                except Exception as e:
+                    logger.error(f"Error in price handler: {e}")
     
     async def _handle_candle_update(self, data: Dict[str, Any]) -> None:
-        """Handle candle update"""
+        """Handle candle update from SDK <mcreference link="https://github.com/Reya-Labs/reya-python-sdk" index="1">1</mcreference>"""
         symbol = data.get('symbol')
         candle = data.get('candle', {})
         
@@ -183,38 +150,26 @@ class ReyaClient(BaseExchange):
             self.market_data_cache[symbol]['candle_timestamp'] = get_current_timestamp()
     
     async def subscribe_to_funding_rates(self, symbols: List[str]) -> None:
-        """Subscribe to funding rate updates"""
-        if not self.ws:
-            raise RuntimeError("WebSocket not connected")
+        """Subscribe to funding rate updates using SDK <mcreference link="https://github.com/Reya-Labs/reya-python-sdk" index="1">1</mcreference>"""
+        if not self.ws_consumer:
+            raise RuntimeError("WebSocket consumer not initialized")
         
         for symbol in symbols:
             normalized_symbol = self.normalize_symbol(symbol)
-            subscription = {
-                "type": "subscribe",
-                "channel": "funding_rate",
-                "symbol": normalized_symbol
-            }
-            
-            await self.ws.send(json.dumps(subscription))
+            await self.ws_consumer.subscribe_to_funding_rates([normalized_symbol])
             self.subscriptions.add(f"funding_rate:{normalized_symbol}")
             logger.info(f"Subscribed to funding rate: {normalized_symbol}")
     
     async def subscribe_to_prices(self, symbols: List[str]) -> None:
-        """Subscribe to price updates"""
-        if not self.ws:
-            raise RuntimeError("WebSocket not connected")
+        """Subscribe to price updates using SDK <mcreference link="https://github.com/Reya-Labs/reya-python-sdk" index="1">1</mcreference>"""
+        if not self.ws_consumer:
+            raise RuntimeError("WebSocket consumer not initialized")
         
         for symbol in symbols:
             normalized_symbol = self.normalize_symbol(symbol)
-            subscription = {
-                "type": "subscribe",
-                "channel": "price",
-                "symbol": normalized_symbol
-            }
-            
-            await self.ws.send(json.dumps(subscription))
+            await self.ws_consumer.subscribe_to_prices([normalized_symbol])
             self.subscriptions.add(f"price:{normalized_symbol}")
-            logger.info(f"Subscribed to price: {normalized_symbol}")
+            logger.info(f"Subscribed to prices: {normalized_symbol}")
     
     async def get_market_data(self, symbol: str) -> Optional[MarketData]:
         """Get market data for a symbol"""
@@ -230,32 +185,96 @@ class ReyaClient(BaseExchange):
             price=cache_data.get('price', 0.0),
             funding_rate=cache_data.get('funding_rate', 0.0),
             timestamp=datetime.now(timezone.utc),
-            volume_24h=None,  # Not available in current cache
-            open_interest=None  # Not available in current cache
+            volume_24h=0.0,  # TODO: Add volume data when available from SDK
+            open_interest=0.0  # TODO: Add OI data when available from SDK
         )
     
-    async def get_funding_rate(self, symbol: str) -> Optional[float]:
-        """Get current funding rate for a symbol"""
-        normalized_symbol = self.normalize_symbol(symbol)
+    async def get_balance(self) -> Optional[Balance]:
+        """Get account balance using SDK contract calls"""
+        if not self.account_id or not self.sdk_config:
+            logger.warning("No account ID or SDK config available for balance query")
+            return None
         
-        if normalized_symbol in self.market_data_cache:
-            return self.market_data_cache[normalized_symbol].get('funding_rate')
-        
-        return None
-    
-    async def get_balance(self) -> List[Balance]:
-        """Get account balances"""
-        # TODO: Implement using Reya RPC calls
-        # This would require implementing the margin account balance queries
-        logger.warning("get_balance not yet implemented for Reya")
-        return []
+        try:
+            # Get core contract from SDK config
+            core_contract = self.sdk_config["w3contracts"]["core"]
+            
+            # Call getUsdNodeMarginInfo to get balance information
+            margin_info = core_contract.functions.getUsdNodeMarginInfo(
+                int(self.account_id)
+            ).call()
+            
+            # Extract balance data (amounts are in wei, convert to readable format)
+            margin_balance = margin_info[1] / 10**6  # marginBalance scaled by 10^6
+            real_balance = margin_info[2] / 10**6    # realBalance scaled by 10^6
+            
+            return Balance(
+                total=safe_float(real_balance),
+                available=safe_float(margin_balance),
+                used=safe_float(max(0, real_balance - margin_balance)),
+                currency='rUSD'  # Reya's native currency
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to get balance from Reya SDK: {e}")
+            return None
     
     async def get_positions(self) -> List[Position]:
-        """Get open positions"""
-        # TODO: Implement using Reya RPC calls
-        # This would require implementing position queries
-        logger.warning("get_positions not yet implemented for Reya")
-        return []
+        """Get open positions using SDK contract calls"""
+        if not self.account_id or not self.sdk_config:
+            logger.warning("No account ID or SDK config available for positions query")
+            return []
+        
+        try:
+            # Get passive perp contract from SDK config
+            passive_perp_contract = self.sdk_config["w3contracts"]["passive_perp"]
+            
+            positions = []
+            
+            # Query positions for each market (ETH, BTC, SOL, etc.)
+            for market_id in [MarketIds.ETH.value, MarketIds.BTC.value, MarketIds.SOL.value, MarketIds.ARB.value, MarketIds.OP.value]:
+                try:
+                    # Call getUpdatedPositionInfo to get position data
+                    position_info = passive_perp_contract.functions.getUpdatedPositionInfo(
+                        market_id, int(self.account_id)
+                    ).call()
+                    
+                    # Extract position data
+                    base_amount = position_info[0] / 10**18  # base amount scaled by 10^18
+                    realized_pnl = position_info[1] / 10**18  # realized PnL scaled by 10^18
+                    last_price = position_info[2][0] / 10**18  # last price scaled by 10^18
+                    
+                    # Only include positions with non-zero base amount
+                    if abs(base_amount) > 0.001:  # Minimum position size threshold
+                        # Map market ID to symbol
+                        symbol_map = {
+                            MarketIds.ETH.value: "ETH-rUSD",
+                            MarketIds.BTC.value: "BTC-rUSD", 
+                            MarketIds.SOL.value: "SOL-rUSD",
+                            MarketIds.ARB.value: "ARB-rUSD",
+                            MarketIds.OP.value: "OP-rUSD"
+                        }
+                        
+                        position = Position(
+                            symbol=symbol_map.get(market_id, f"MARKET_{market_id}"),
+                            side=OrderSide.LONG if base_amount > 0 else OrderSide.SHORT,
+                            size=abs(base_amount),
+                            entry_price=0.0,  # Entry price not directly available
+                            mark_price=last_price,
+                            unrealized_pnl=0.0,  # Would need additional calculation
+                            timestamp=datetime.now(timezone.utc)
+                        )
+                        positions.append(position)
+                        
+                except Exception as market_error:
+                    logger.debug(f"No position found for market {market_id}: {market_error}")
+                    continue
+            
+            return positions
+            
+        except Exception as e:
+            logger.error(f"Failed to get positions from Reya SDK: {e}")
+            return []
     
     async def place_order(
         self,
@@ -265,69 +284,125 @@ class ReyaClient(BaseExchange):
         order_type: OrderType = OrderType.MARKET,
         price: Optional[float] = None
     ) -> Optional[Order]:
-        """Place an order on Reya"""
-        # TODO: Implement using Reya trade execution
-        # This would require implementing the trade execution from the SDK
-        logger.warning("place_order not yet implemented for Reya")
+        """Place an order using SDK trade execution"""
+        if not self.sdk_config or not self.account_id:
+            logger.error("SDK config and account ID required for trading")
+            return None
+        
+        try:
+            # Convert to SDK format
+            # Negative amount for short, positive for long
+            base_amount = amount if side == OrderSide.LONG else -amount
+            
+            # Convert to 18 decimal precision as required by SDK
+            base_amount_wei = int(base_amount * 10**18)
+            
+            # Set price limit (required by SDK)
+            if price is None:
+                # Get current market price for limit calculation
+                market_data = await self.get_market_data(symbol)
+                if not market_data:
+                    logger.error(f"No market data available for {symbol}")
+                    return None
+                
+                # Add slippage tolerance (1% for market orders)
+                slippage = 0.01
+                if side == OrderSide.LONG:
+                    price_limit = market_data.price * (1 + slippage)
+                else:
+                    price_limit = market_data.price * (1 - slippage)
+            else:
+                price_limit = price
+            
+            # Convert price to 18 decimal precision
+            price_limit_wei = int(price_limit * 10**18)
+            
+            # Map symbol to market ID
+            symbol_to_market = {
+                "ETH-rUSD": MarketIds.ETH.value,
+                "BTC-rUSD": MarketIds.BTC.value,
+                "SOL-rUSD": MarketIds.SOL.value,
+                "ARB-rUSD": MarketIds.ARB.value,
+                "OP-rUSD": MarketIds.OP.value
+            }
+            
+            normalized_symbol = self.normalize_symbol(symbol)
+            market_id = symbol_to_market.get(normalized_symbol)
+            if not market_id:
+                logger.error(f"Unknown market symbol: {normalized_symbol}")
+                return None
+            
+            # Create trade parameters
+            trade_params = TradeParams(
+                account_id=int(self.account_id),
+                market_id=market_id,
+                base=base_amount_wei,
+                price_limit=price_limit_wei
+            )
+            
+            # Execute trade using SDK
+            result = trade(self.sdk_config, trade_params)
+            
+            if result and result.get('tx_receipt'):
+                order = Order(
+                    id=result['tx_receipt'].transactionHash.hex(),
+                    symbol=symbol,
+                    side=side,
+                    amount=amount,
+                    price=price_limit,
+                    order_type=order_type,
+                    status=OrderStatus.FILLED,  # Assume filled for successful execution
+                    timestamp=datetime.now(timezone.utc)
+                )
+                
+                logger.info(f"Order executed successfully: {order.id}")
+                return order
+            else:
+                logger.error(f"Trade execution failed: {result}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to place order using Reya SDK: {e}")
+            return None
+    
+    async def get_order_status(self, order_id: str) -> Optional[Order]:
+        """Get order status"""
+        # TODO: Implement order status query when available in SDK
+        logger.warning("get_order_status not yet implemented in Reya SDK")
         return None
     
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel an order"""
-        # TODO: Implement order cancellation
-        logger.warning("cancel_order not yet implemented for Reya")
+        # TODO: Implement order cancellation when available in SDK
+        logger.warning("cancel_order not yet implemented in Reya SDK")
         return False
     
-    async def get_order_status(self, order_id: str) -> Optional[Order]:
-        """Get order status"""
-        # TODO: Implement order status query
-        logger.warning("get_order_status not yet implemented for Reya")
-        return None
-    
     def normalize_symbol(self, symbol: str) -> str:
-        """Normalize symbol to Reya format
-        
-        Args:
-            symbol: Standard format (e.g., 'BTC-USD')
-            
-        Returns:
-            Reya format (e.g., 'BTC-rUSD')
-        """
-        if '-' in symbol:
-            base, quote = symbol.split('-')
-            if quote.upper() == 'USD':
-                quote = 'rUSD'
-            return f"{base}-{quote}"
-        return symbol
-    
-    def denormalize_symbol(self, symbol: str) -> str:
-        """Convert Reya symbol to standard format
-        
-        Args:
-            symbol: Reya format (e.g., 'BTC-rUSD')
-            
-        Returns:
-            Standard format (e.g., 'BTC-USD')
-        """
-        if '-' in symbol:
-            base, quote = symbol.split('-')
-            if quote.upper() == 'RUSD':
-                quote = 'USD'
-            return f"{base}-{quote}"
+        """Normalize symbol format for Reya"""
+        # Reya uses format like 'SOL-rUSD'
+        if '-' not in symbol:
+            return f"{symbol}-rUSD"
         return symbol
     
     async def health_check(self) -> bool:
         """Perform health check"""
         try:
-            # Check RPC connection
-            if not self.w3.is_connected():
-                return False
-            
             # Check WebSocket connection
-            if not self.ws or self.ws.closed:
+            if not self.ws_consumer or not self._connected:
                 return False
             
-            return True
+            # Check if we can get balance (tests RPC connectivity)
+            balance = await self.get_balance()
+            return balance is not None
             
         except Exception as e:
-            logger.error(f"Reya health check failed: {e}")
+            logger.error(f"Health check failed: {e}")
             return False
+    
+    def add_funding_rate_handler(self, handler) -> None:
+        """Add funding rate update handler"""
+        self._funding_rate_handlers.append(handler)
+    
+    def add_price_handler(self, handler) -> None:
+        """Add price update handler"""
+        self._price_handlers.append(handler)
