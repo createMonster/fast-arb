@@ -1,0 +1,84 @@
+# Fast Arbitrage Configuration
+
+# 基本设置
+general:
+  log_level: "INFO"
+  update_interval: 30  # 数据更新间隔（秒）
+  dry_run: true  # 是否为模拟模式
+  
+# 交易所配置
+exchanges:
+  reya:
+    enabled: true
+    websocket_url: "wss://ws.reya.network"
+    rpc_url: "https://rpc.reya.network"
+    chain_id: 1729  # Reya Network chain ID
+    private_key: ""  # 从环境变量读取
+    account_id: ""   # Margin account ID
+    
+  hyperliquid:
+    enabled: true
+    api_url: "https://api.hyperliquid.xyz"
+    private_key: ""  # 从环境变量读取
+    
+# 套利策略配置
+arbitrage:
+  funding_rate:
+    # 最小价差阈值（年化百分比）
+    min_spread_threshold: 0.5  # 0.5%
+    # 最大价差阈值（超过此值可能存在风险）
+    max_spread_threshold: 10.0  # 10%
+    # 检查间隔（秒）
+    check_interval: 60
+    
+# 风险管理
+risk_management:
+  # 最大总仓位（USD）
+  max_total_position: 10000
+  # 单个交易对最大仓位（USD）
+  max_position_per_pair: 2000
+  # 最小交易金额（USD）
+  min_trade_amount: 100
+  # 止损百分比
+  stop_loss_percentage: 2.0  # 2%
+  # 止盈百分比
+  take_profit_percentage: 1.0  # 1%
+  
+# 交易对配置
+trading_pairs:
+  - symbol: "SOL-USD"
+    reya_symbol: "SOL-rUSD"
+    hyperliquid_symbol: "SOL"
+    enabled: true
+    min_funding_rate_diff: 0.3  # 最小funding rate差异
+    max_position: 1000  # 该交易对最大仓位
+    
+  - symbol: "ETH-USD"
+    reya_symbol: "ETH-rUSD"
+    hyperliquid_symbol: "ETH"
+    enabled: true
+    min_funding_rate_diff: 0.2
+    max_position: 2000
+    
+  - symbol: "BTC-USD"
+    reya_symbol: "BTC-rUSD"
+    hyperliquid_symbol: "BTC"
+    enabled: false  # 暂时禁用
+    min_funding_rate_diff: 0.2
+    max_position: 3000
+
+# 通知设置
+notifications:
+  enabled: true
+  # 可以添加Discord、Telegram等通知方式
+  console: true
+  file: true
+  
+# 数据存储
+data_storage:
+  # 是否保存历史数据
+  save_history: true
+  # 数据保存路径
+  data_path: "./data"
+  # 保存间隔（秒）
+  save_interval: 300

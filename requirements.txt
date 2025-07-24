@@ -1,0 +1,40 @@
+# Core dependencies
+ccxt>=4.1.0
+requests>=2.31.0
+websockets>=11.0.3
+aiohttp>=3.8.5
+
+# Configuration and data handling
+PyYAML>=6.0.1
+pydantic>=2.4.0
+pandas>=2.1.0
+numpy>=1.24.0
+
+# Async support
+aiofiles>=23.2.1
+asyncio-mqtt>=0.16.1
+
+# Logging and monitoring
+loguru>=0.7.2
+rich>=13.6.0
+
+# Environment and configuration
+python-dotenv>=1.0.0
+click>=8.1.7
+
+# Math and calculations
+scipy>=1.11.0
+
+# Development and testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.1
+black>=23.9.1
+flake8>=6.1.0
+
+# Reya SDK dependencies (will be installed from git)
+# Note: Add reya-python-sdk when available on PyPI
+# For now, we'll implement our own Reya client based on the SDK examples
+
+# Web3 and blockchain
+web3>=6.11.0
+eth-account>=0.9.0
